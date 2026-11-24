@@ -1,8 +1,7 @@
-"""Create and verify portable file inventories for code and optional data."""
+"""Create and verify the file inventory of the data directory."""
 # An inventory is MANIFEST.tsv at a directory's root, listing every file's relative
 # path, size and SHA-256. run.py checks the data directory against its inventory
-# before reproduce and fit; --source handles the code directory, whose inventory
-# leaves out generated folders.
+# before reproduce.
 import argparse
 import csv
 import hashlib
@@ -15,8 +14,6 @@ from tools.datadir import MISSING_DATA
 
 # Version-control, cache and environment folders that are never inventoried.
 IGNORED = {'__pycache__', '.git', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.venv', 'venv'}
-# Top-level folders skipped in a code (source) inventory.
-GENERATED = {'data', 'outputs', 'dist', 'build'}
 
 
 def sha256(path):
@@ -28,12 +25,12 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def files(root, *, source=False):
+def files(root):
     """Sorted release files under root, excluding the manifest; rejects symlinks and private files."""
     result = []
     for path in sorted(root.rglob('*')):
         relative = path.relative_to(root)
-        if any(part in IGNORED for part in relative.parts) or (source and relative.parts[0] in GENERATED):
+        if any(part in IGNORED for part in relative.parts):
             continue
         if path.name == '.DS_Store':
             continue
@@ -48,12 +45,12 @@ def files(root, *, source=False):
     return result
 
 
-def write(root, *, source=False):
+def write(root):
     """Write root/MANIFEST.tsv, replacing any existing one only after the new one is complete."""
     if not root.is_dir():
         raise ValueError(f'Inventory root is not a directory: {root}')
     rows = [[path.relative_to(root).as_posix(), path.stat().st_size, sha256(path)]
-            for path in files(root, source=source)]
+            for path in files(root)]
     if not rows:
         raise ValueError(f'Cannot write an empty inventory: {root}')
     # Write to a temporary file in the same directory and rename it into place.
@@ -72,11 +69,11 @@ def write(root, *, source=False):
             temporary.unlink(missing_ok=True)
 
 
-def verify(root, *, source=False):
+def verify(root):
     """Check root's files against MANIFEST.tsv and return the number of files."""
     inventory = root / 'MANIFEST.tsv'
     if not inventory.is_file():
-        raise ValueError(f'Missing {inventory}.' + ('' if source else f' {MISSING_DATA}'))
+        raise ValueError(f'Missing {inventory}. {MISSING_DATA}')
     with inventory.open(newline='') as handle:
         reader = csv.DictReader(handle, delimiter='\t')
         if reader.fieldnames != ['path', 'bytes', 'sha256']:
@@ -92,7 +89,7 @@ def verify(root, *, source=False):
             raise ValueError(f'Malformed manifest row {number}')
     # The listed paths must equal the files on disk, with no duplicates.
     names = [row['path'] for row in entries]
-    actual = {path.relative_to(root).as_posix(): path for path in files(root, source=source)}
+    actual = {path.relative_to(root).as_posix(): path for path in files(root)}
     if not names or len(set(names)) != len(names):
         raise ValueError('Manifest lists no files or a file twice')
     if set(names) != set(actual):
@@ -110,15 +107,13 @@ def main():
     """Verify (or, with --write, write and verify) the inventory of a directory."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root', type=Path, help='Directory whose MANIFEST.tsv to check')
-    parser.add_argument('--source', action='store_true',
-                        help='Treat root as the code directory and skip its generated folders')
     parser.add_argument('--write', action='store_true', help='Rewrite MANIFEST.tsv before checking it')
     args = parser.parse_args()
     root = args.root.resolve()
     try:
         if args.write:
-            write(root, source=args.source)
-        print(f'PASS: {verify(root, source=args.source)} files match the inventory.')
+            write(root)
+        print(f'PASS: {verify(root)} files match the inventory.')
     except (FileNotFoundError, ValueError) as error:
         print(f'FAIL: {error}', file=sys.stderr)
         raise SystemExit(1)
